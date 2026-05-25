@@ -1,0 +1,62 @@
+package com.huseyin.personalfinanceapi.transaction.processor.validator;
+
+
+import com.huseyin.personalfinanceapi.account.AccountType;
+import com.huseyin.personalfinanceapi.account.entity.Account;
+import com.huseyin.personalfinanceapi.common.TransactionType;
+import com.huseyin.personalfinanceapi.transaction.exception.BusinessRuleViolationException;
+import org.springframework.stereotype.Component;
+
+import java.util.EnumSet;
+import java.util.Objects;
+import java.util.Set;
+
+@Component
+public class AssetPurchaseValidator  {
+
+    private static final Set<AccountType> VALID_ACCOUNTS_FOR_ASSET_TRANSACTIONS =
+            EnumSet.of(AccountType.WALLET, AccountType.BANK, AccountType.SAVINGS, AccountType.INVESTMENT, AccountType.PRECIOUS_METAL);
+
+    /**
+     * Bu hesap türlerinden ASSET_PURCHASE'ta kaynak olarak kullanılabilir.
+     */
+    private static final Set<AccountType> ASSET_PURCHASE_ALLOWED_SOURCES =
+            EnumSet.of(AccountType.WALLET, AccountType.BANK,
+                    AccountType.SAVINGS);
+
+    private static final Set<AccountType> ASSET_PURCHASE_ALLOWED_DESTINATIONS =
+            EnumSet.of(AccountType.INVESTMENT, AccountType.PRECIOUS_METAL);
+
+
+    public boolean isAccountAllowed(AccountType type) {
+        return VALID_ACCOUNTS_FOR_ASSET_TRANSACTIONS.contains(type);
+    }
+
+
+    public void validate(TransactionType type, Account source, Account destination) {
+        if (Objects.equals(source.getId(), destination.getId())) {
+            throw new BusinessRuleViolationException("Source and destination cannot be the same");
+        }
+
+        if (!isAccountAllowed(source.getType()) || !isAccountAllowed(destination.getType())) {
+            throw new BusinessRuleViolationException(
+                    "Valıd accounts for asset purchase transaction:" + VALID_ACCOUNTS_FOR_ASSET_TRANSACTIONS.stream().toList()
+            );
+        }
+        if (!ASSET_PURCHASE_ALLOWED_SOURCES.contains(source.getType())) {
+            throw new BusinessRuleViolationException(
+                    source.getType().name() + "cannot be source account in asset-purchase transcation"
+            );
+        }
+        if (!ASSET_PURCHASE_ALLOWED_DESTINATIONS.contains(destination.getType())) {
+            throw new BusinessRuleViolationException(
+                    destination.getType().name() + "cannot be destination account in asset-purchase transcation"
+            );
+        }
+
+    }
+
+}
+
+
+
