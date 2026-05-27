@@ -4,11 +4,15 @@ import com.huseyin.personalfinanceapi.account.entity.Account;
 import com.huseyin.personalfinanceapi.account.entity.AssetAccount;
 import com.huseyin.personalfinanceapi.account.entity.BalanceAccount;
 import com.huseyin.personalfinanceapi.account.exception.AccountAccessDeniedException;
+import com.huseyin.personalfinanceapi.asset.entity.Asset;
 import com.huseyin.personalfinanceapi.category.entity.Category;
 import com.huseyin.personalfinanceapi.common.Money;
 import com.huseyin.personalfinanceapi.common.TransactionType;
 import com.huseyin.personalfinanceapi.common.accessgate.UserAccessGate;
 import com.huseyin.personalfinanceapi.transaction.controller.dto.*;
+import com.huseyin.personalfinanceapi.transaction.controller.dto.asset.CreateAssetPurchaseRequest;
+import com.huseyin.personalfinanceapi.transaction.controller.dto.asset.CreateAssetSellRequest;
+import com.huseyin.personalfinanceapi.transaction.controller.dto.asset.OpeningAssetRequest;
 import com.huseyin.personalfinanceapi.transaction.entity.Transaction;
 import com.huseyin.personalfinanceapi.transaction.entry.AssetEntry;
 import com.huseyin.personalfinanceapi.transaction.entry.CashEntry;
@@ -19,6 +23,7 @@ import com.huseyin.personalfinanceapi.transaction.processor.command.*;
 import com.huseyin.personalfinanceapi.transaction.processor.processors.TransactionProcessor;
 import com.huseyin.personalfinanceapi.transaction.repository.TransactionRepository;
 import com.huseyin.personalfinanceapi.transaction.resolver.AccountAccessResolver;
+import com.huseyin.personalfinanceapi.transaction.resolver.AssetResolver;
 import com.huseyin.personalfinanceapi.transaction.resolver.CategoryResolver;
 import com.huseyin.personalfinanceapi.transaction.validator.TransactionValidator;
 import com.huseyin.personalfinanceapi.user.entity.User;
@@ -26,8 +31,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Tüm işlem oluşturma ve bakiye/holding güncellemelerini <b>atomik</b> ve
@@ -46,15 +51,18 @@ public class TransactionService {
     private final AccountAccessResolver accountResolver;
     private final CategoryResolver categoryResolver;
     private final TransactionProcessorRegistry processorRegistry;
+    private final AssetResolver assetResolver;
+
 
     public TransactionService(TransactionRepository transactionRepository, UserAccessGate userAccessGate,
                               AccountAccessResolver accountResolver, CategoryResolver categoryResolver,
-                              TransactionProcessorRegistry processorRegistry) {
+                              TransactionProcessorRegistry processorRegistry, AssetResolver assetResolver) {
         this.transactionRepository = transactionRepository;
         this.userAccessGate = userAccessGate;
         this.accountResolver = accountResolver;
         this.categoryResolver = categoryResolver;
         this.processorRegistry = processorRegistry;
+        this.assetResolver = assetResolver;
     }
 
     // ---------------------------------------------------------------------
@@ -74,7 +82,7 @@ public class TransactionService {
 
         return initialBalanceProcessor.process(
                 new InitialBalanceCommand(
-                        user,account,req.amount(),req.description(),Instant.now()
+                        user,account,req.amount()
                 )
         );
 
@@ -130,7 +138,7 @@ public class TransactionService {
         return processor.process(
                 new ExpenseCommand(
                         user,
-                        (BalanceAccount) account,
+                        account,
                         req.amount(),
                         req.description(),
                         req.dateAndTime(),
@@ -197,19 +205,67 @@ public class TransactionService {
 
     }
 
+
+    public Transaction recordOpeningAsset(
+            Long userId,
+            OpeningAssetRequest request
+    ){
+        User user = userAccessGate.requireFinancialAccess(userId);
+        Account account = accountResolver.resolveOwnedAccount(request.assetAccountId(),userId);
+
+        // 1. İstekteki varlıkları çöz ve doğrula
+        List<Asset> resolvedAssets = assetResolver.resolveAssets(userId, request.assetItemLineList());
+
+        // 2. İstekteki dağınık satırları assetId'ye göre grupla
+        Map<Long, List<OpeningAssetCommand.AssetItem>> itemsGroupedByAssetId = request.assetItemLineList().stream()
+                .collect(Collectors.groupingBy(
+                        OpeningAssetRequest.AssetItemLine::assetId,
+                        Collectors.mapping(
+                                line -> new OpeningAssetCommand.AssetItem(line.quantity(), line.unitPrice()),
+                                Collectors.toList()
+                        )
+                ));
+
+        // 3. Çözülen Asset entity'leri ile gruplanmış alımları zengin nesneye (AssetOrder) dönüştür
+        List<OpeningAssetCommand.AssetOrder> orders = resolvedAssets.stream()
+                .map(asset -> new OpeningAssetCommand.AssetOrder(
+                        asset,
+                        itemsGroupedByAssetId.get(asset.getId()) // Entity yerine güvenli bir şekilde Long ID ile buluyoruz
+                ))
+                .toList();
+
+
+        TransactionProcessor<OpeningAssetCommand> processor = processorRegistry.get(TransactionType.OPENING_ASSET);
+        return processor.process(new OpeningAssetCommand(user, account, orders));
+
+
+    }
+
     // ---------------------------------------------------------------------
     //  ASSET PURCHASE
     // ---------------------------------------------------------------------
-
     @Transactional
     public Transaction recordAssetPurchase(Long userId,
                                            CreateAssetPurchaseRequest req) {
         User user = userAccessGate.requireFinancialAccess(userId);
-        Account source = accountResolver.resolveOwnedAccount(req.sourceCashAccountId(),userId);
-        Account destination = accountResolver.resolveOwnedAccount(req.assetAccountId(),userId);
+        Account cashAccount = accountResolver.resolveOwnedAccount(req.cashAccountId(),userId);
+        Account assetAccount = accountResolver.resolveOwnedAccount(req.assetAccountId(),userId);
 
+        Asset asset = assetResolver.resolveAsset(userId,req.assetId());
+        TransactionProcessor<AssetPurchaseCommand>  transactionProcessor= processorRegistry.get(TransactionType.ASSET_PURCHASE);
 
-
+        return transactionProcessor.process(
+                new AssetPurchaseCommand(
+                        user,
+                        cashAccount,
+                        assetAccount,
+                        asset,
+                        req.quantity(),
+                        req.unitPrice(),
+                        req.description(),
+                        req.dateAndTime()
+                )
+        );
 
 
     }
@@ -217,39 +273,31 @@ public class TransactionService {
     // ---------------------------------------------------------------------
     //  ASSET SELL
     // ---------------------------------------------------------------------
-
     @Transactional
     public Transaction recordAssetSell(Long userId,
                                        CreateAssetSellRequest req) {
         User user = userAccessGate.requireFinancialAccess(userId);
 
-        AssetAccount source = (AssetAccount) accountResolver.resolveOwnedAccount(req.assetAccountId(),userId);
-        BalanceAccount destination = (BalanceAccount)accountResolver.resolveOwnedAccount(req.destinationCashAccountId(),userId);
+        Account assetAccount =  accountResolver.resolveOwnedAccount(req.assetAccountId(),userId);
+        Account cashAccount = accountResolver.resolveOwnedAccount(req.destinationCashAccountId(),userId);
 
+        Asset asset = assetResolver.resolveAsset(userId, req.assetId());
 
-        validator.validateOperationAllowed(destination,TransactionType.ASSET_SELL);
-        validator.validateOperationAllowed(source, TransactionType.ASSET_SELL);
-        validator.validateAssetSell(source, destination);
+        TransactionProcessor<AssetSellCommand> processor = processorRegistry.get(TransactionType.ASSET_SELL);
 
-        Money unitPrice = new Money(req.unitPriceAmount(), req.unitPriceCurrencyCode());
-        Money totalCashMoney = new Money(req.totalCashAmount(), req.unitPriceCurrencyCode());
+        return processor.process(
+                new AssetSellCommand(
+                        user,
+                        assetAccount, // Varlık azalacak
+                        cashAccount,  // Nakit artacak
+                        asset,
+                        req.quantity(),
+                        req.unitPrice(),
+                        req.description(),
+                        req.dateAndTime()
+                )
+        );
 
-        Transaction tx = transactionFactory.createTransaction(user, TransactionType.ASSET_SELL,
-                req.description(), nullToNow(req.dateAndTime()),null,null);
-
-        AssetEntry out = new AssetEntry(req.assetSymbol(), req.assetUnit(),
-                req.quantity(), unitPrice, Entry.Direction.OUTWARD);
-
-        out.setAccount(source);
-        CashEntry in = new CashEntry(totalCashMoney, Entry.Direction.INWARD);
-        in.setAccount(destination);
-
-        tx.addEntry(out);
-        tx.addEntry(in);
-
-        applyAssetSell(source, req.assetSymbol(), req.assetUnit(), req.quantity());
-        applyCashDelta(destination, in.getAmount(),in.getDirection());
-        return transactionRepository.save(tx);
     }
 
     // ---------------------------------------------------------------------

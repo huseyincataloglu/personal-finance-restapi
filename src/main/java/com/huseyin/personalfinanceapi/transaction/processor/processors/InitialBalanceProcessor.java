@@ -16,6 +16,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
 
 @Component
 @RequiredArgsConstructor
@@ -41,16 +43,16 @@ public class InitialBalanceProcessor implements TransactionProcessor<InitialBala
         Transaction tx = new Transaction();
         tx.setUser(command.user());
         tx.setType(TransactionType.INITIAL_BALANCE);
-        tx.setDescription( command.description() != null ? command.description() : "Initial Balance addition");
-        tx.setTime(command.dateTime());
+        tx.setDescription( "Account Initial Balance");
+        tx.setTime(Instant.from(account.getCreatedAt().plusMinutes(1)));
         CashEntry entry;
 
         entry = resolveEntryDirection(account, amount);// !
         entry.setAccount(account);
         tx.addEntry(entry);
 
-        // Bakiye uygula
-        engine.applyCashDelta(account,entry);
+
+        engine.applyEntries(tx.getEntryList());// single entry
 
         return repository.save(tx);
     }

@@ -137,7 +137,6 @@ public class AccountController {
     }
 
 
-
     private ResponseEntity<TransactionResponse> created(Transaction tx) {
         return ResponseEntity.status(HttpStatus.CREATED).body(TransactionResponse.from(tx));
     }

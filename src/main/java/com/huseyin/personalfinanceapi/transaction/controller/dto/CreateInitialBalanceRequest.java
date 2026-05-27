@@ -11,6 +11,5 @@ import java.math.BigDecimal;
 public record CreateInitialBalanceRequest(
         @NotNull Long accountId,
         @NotNull @Positive BigDecimal amount,
-        String description
 ) {
 }

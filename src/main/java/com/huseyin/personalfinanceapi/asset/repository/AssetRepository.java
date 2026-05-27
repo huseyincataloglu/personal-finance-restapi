@@ -31,4 +31,7 @@ public interface AssetRepository extends JpaRepository<Asset,Long> {
     );
 
 
+    boolean findByIdOrUserId(Long id, @Param("userId") Long userId);
+
+
 }

@@ -12,6 +12,7 @@ import com.huseyin.personalfinanceapi.transaction.entry.CashEntry;
 import com.huseyin.personalfinanceapi.transaction.entry.Entry;
 import com.huseyin.personalfinanceapi.transaction.exception.BusinessRuleViolationException;
 import com.huseyin.personalfinanceapi.transaction.processor.command.AssetSellCommand;
+import com.huseyin.personalfinanceapi.transaction.processor.policy.AssetSellAccountPolicy;
 import com.huseyin.personalfinanceapi.transaction.repository.TransactionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -32,17 +33,20 @@ public class AssetSellProcessor implements TransactionProcessor<AssetSellCommand
 
     @Override
     public Transaction process(AssetSellCommand command) {
-        AssetAccount sourceAccount  =  command.assetAccount();
-        BalanceAccount destinationAccount = command.destinationAccount();
 
-        AssetAccountHolding assetAccountHolding = sourceAccount.findHolding(command.assetSymbol(),command.assetUnit());
+        AssetSellAccountPolicy.validate(command.srcAssetAccount(),command.destCashAccount());
+
+        AssetAccount srcAssetAccount  = (AssetAccount) command.srcAssetAccount();
+        BalanceAccount destCashAccount = (BalanceAccount)command.destCashAccount();
+
+        AssetAccountHolding holding;
 
         String assetCurrency;
         if(assetAccountHolding == null){
-            throw new BusinessRuleViolationException("Holding does not exist");
+            throw new BusinessRuleViolationException("There is no holding record related with asset");
         }
         else {
-            assetCurrency = assetAccountHolding.getAverageUnitPrice().currencyCode();
+            assetCurrency = command.asset().getCurrency();
         }
 
         Transaction transaction = new Transaction();
@@ -53,18 +57,9 @@ public class AssetSellProcessor implements TransactionProcessor<AssetSellCommand
 
         Money destTotalIncome = Money.of(calculateTotalSellIncome(command),assetCurrency);
         CashEntry destEntry = new CashEntry(destTotalIncome, Entry.Direction.INWARD);
-        destEntry.setAccount(destinationAccount);
+        destEntry.setAccount(destCashAccount);
 
-        Money unitPrice = Money.of(command.unitPriceAmount(),assetCurrency);
-        AssetEntry sourceEntry = new AssetEntry(command.assetSymbol(),
-                command.assetUnit(),command.quantity(),unitPrice,Entry.Direction.OUTWARD);
-        sourceEntry.setAccount(sourceAccount);
 
-        transaction.addEntry(sourceEntry);
-        transaction.addEntry(destEntry);
-
-        engine.applyCashDelta(destinationAccount,destEntry);
-        engine.applyAssetSell(sourceAccount,assetAccountHolding,sourceEntry.getQuantity());
         return repository.save(transaction);
 
     }

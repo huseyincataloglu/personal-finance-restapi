@@ -1,5 +1,6 @@
 package com.huseyin.personalfinanceapi.transaction.repository;
 
+import com.huseyin.personalfinanceapi.account.entity.Account;
 import com.huseyin.personalfinanceapi.common.TransactionType;
 import com.huseyin.personalfinanceapi.transaction.entity.Transaction;
 import com.huseyin.personalfinanceapi.transaction.entry.Entry;
@@ -62,24 +63,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long>,
             """)
     boolean existsNonReversedNonInitialBalanceForAccount(@Param("accountId") Long accountId,@Param("type") TransactionType type);
 
-    /** Bu hesap için zaten bir INITIAL_BALANCE oluşturulmuş mu? */
-    @Query("""
-            SELECT CASE WHEN COUNT(e) > 0 THEN TRUE ELSE FALSE END
-              FROM Entry e
-             WHERE e.account.id = :accountId
-               AND e.transaction.type = :type
-            """)
-    boolean existsInitialBalanceForAccount(@Param("accountId") Long accountId,@Param("type") TransactionType type);
 
-    @Query("""
-    SELECT CASE WHEN COUNT(e) > 0 THEN TRUE ELSE FALSE END
-    FROM Entry e
-    WHERE e.account.id = :accountId
-      AND e.transaction.type = :type
-      AND e.transaction.reversed = false
-    """)
-    boolean existsNonReversedInitialBalanceForAccount(
-            @Param("accountId") Long accountId,
-            @Param("type") TransactionType type
-    );
+    boolean existsByTypeAndReversedFalseAndEntryList_Account(TransactionType type,Account account);
+
 }

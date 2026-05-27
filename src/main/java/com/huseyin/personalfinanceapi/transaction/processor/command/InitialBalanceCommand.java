@@ -9,9 +9,7 @@ import java.time.Instant;
 public record InitialBalanceCommand(
         User user,
         Account account,
-        BigDecimal amount,
-        String description,
-        Instant dateTime
+        BigDecimal amount
 ) implements TransactionCommand
 {
 }

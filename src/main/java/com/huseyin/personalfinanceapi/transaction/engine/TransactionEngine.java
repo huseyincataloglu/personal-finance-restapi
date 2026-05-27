@@ -3,6 +3,7 @@ package com.huseyin.personalfinanceapi.transaction.engine;
 import com.huseyin.personalfinanceapi.account.entity.AssetAccount;
 import com.huseyin.personalfinanceapi.account.holding.AssetAccountHolding;
 import com.huseyin.personalfinanceapi.account.entity.BalanceAccount;
+import com.huseyin.personalfinanceapi.asset.entity.Asset;
 import com.huseyin.personalfinanceapi.common.Money;
 import com.huseyin.personalfinanceapi.transaction.entry.AssetEntry;
 import com.huseyin.personalfinanceapi.transaction.entry.CashEntry;
@@ -26,28 +27,19 @@ public class  TransactionEngine {
 
     private void applyEntry(Entry entry) {
         if (entry instanceof CashEntry cashEntry) {
-            applyCashDelta((BalanceAccount) cashEntry.getAccount(), cashEntry);
+            applyCashDelta(cashEntry);
         } else if (entry instanceof AssetEntry assetEntry) {
-            applyAssetEntry((AssetAccount)assetEntry.getAccount(),assetEntry);
+            applyAssetDelta(assetEntry);
         } else {
             throw new IllegalStateException("Unknown entry type: " + entry.getClass());
         }
     }
 
 
-    private void applyAssetEntry(AssetAccount assetAccount,AssetEntry assetEntry){
-        if(assetEntry.getDirection() == Entry.Direction.INWARD){
-            applyAssetPurchase(assetAccount,assetEntry);
-        }
-        else {
-            applyAssetSell(assetAccount,assetEntry);
-        }
-    }
-
-
     // ---------------- CASH ----------------
-    public void applyCashDelta(BalanceAccount account, CashEntry cashEntry) {
+    public void applyCashDelta(CashEntry cashEntry) {
 
+        BalanceAccount account = (BalanceAccount) cashEntry.getAccount();
         Money current = account.getBalance();
         Money entryAmount = cashEntry.getAmount();
         Entry.Direction entryDirection = cashEntry.getDirection();
@@ -63,74 +55,54 @@ public class  TransactionEngine {
 
     // ---------------- ASSET ----------------
 
-    public void applyAssetPurchase(AssetAccount account, AssetEntry assetEntry) {
+    public void applyAssetDelta(AssetEntry entry) {
+        AssetAccount account = (AssetAccount) entry.getAccount();
+        Asset asset = entry.getAsset();
+        if(entry.getDirection() == Entry.Direction.INWARD){
+            AssetAccountHolding holding;
+            if(!(account.existsHolding(asset))){
+                holding = account.initializeHolding(asset);
+                holding.setQuantity(entry.getQuantity());
+                holding.setTotalCost(entry.getUnitPrice().multiply(entry.getQuantity(),8).amount());
+                holding.setAverageUnitPrice(entry.getUnitPrice().amount());
 
-        AssetAccountHolding holding =
-                account.findHolding(assetEntry.getAssetSymbol(), assetEntry.getAssetUnit());
+            }
+            else {
+                holding = account.findHolding(asset);
 
-        if (assetEntry.getQuantity() == null ||assetEntry.getQuantity().signum() <= 0) {
-            throw new IllegalArgumentException("Asset quantity needs to be positive to be purchased");
+                BigDecimal newTotalQuantity = entry.getQuantity().add(holding.getQuantity());
+                BigDecimal entryCost = entry.getUnitPrice().multiply(entry.getQuantity(),8).amount();
+                BigDecimal newTotalCost = entryCost.add(holding.getTotalCost());
+                BigDecimal newAverageUnitPrice = newTotalCost.divide(newTotalQuantity,8,RoundingMode.HALF_UP);
+
+                holding.setQuantity(newTotalQuantity);
+                holding.setTotalCost(newTotalCost);
+                holding.setAverageUnitPrice(newAverageUnitPrice);
+
+            }
+            
+        } else if (entry.getDirection() == Entry.Direction.OUTWARD) {
+            AssetAccountHolding holding = account.findHolding(asset);// find holding
+
+            BigDecimal newTotalQuantity = holding.getQuantity().subtract(entry.getQuantity());// calculate new subtracted quantity
+
+            if (newTotalQuantity.compareTo(BigDecimal.ZERO) == 0) { // check if the remaining quantity is zero
+                holding.setTotalCost(BigDecimal.ZERO);
+                holding.setQuantity(BigDecimal.ZERO);
+            } else {
+
+                BigDecimal newTotalCost = newTotalQuantity.multiply(holding.getAverageUnitPrice()); // calculate new total cost
+                // !! We dont recalculate weighted average unit price in asset selling transactions
+                holding.setQuantity(newTotalQuantity);
+                holding.setTotalCost(newTotalCost);
+            }
         }
 
-        if (holding == null) {
-            AssetAccountHolding createdHolding = createInitialAsset(account, assetEntry);
-            account.addHolding(createdHolding);
-        }
-        else {
-            applyPurchase(holding,assetEntry.getQuantity(),assetEntry.getUnitPrice());
-        }
 
     }
 
-    private void applyPurchase(AssetAccountHolding holding, BigDecimal quantity,Money unitPrice){
-        // Calculate the asset's current total cost.
-        Money totalCost = evaluateHoldingTotalPrice(holding);
 
-        // Calculate added asset's total cost
-        Money newCost = unitPrice.multiply(quantity);
-        // calculate total quantity at the end of the addition
-        BigDecimal totalQty = holding.getQuantity().add(quantity);
 
-        Money newAverageUnitPrice = totalCost.add(newCost).divide(totalQty,8, RoundingMode.HALF_UP);
-        holding.setQuantity(totalQty);
-        holding.setAverageUnitPrice(newAverageUnitPrice);
 
-    }
-
-    private static Money evaluateHoldingTotalPrice(AssetAccountHolding holding) {
-        return holding.getAverageUnitPrice().multiply(holding.getQuantity());
-    }
-
-    private AssetAccountHolding createInitialAsset(AssetAccount account, AssetEntry assetEntry) {
-        AssetAccountHolding holding = new AssetAccountHolding();
-        holding.setAssetSymbol(assetEntry.getAssetSymbol());
-        holding.setAssetUnit(assetEntry.getAssetUnit());
-        holding.setAccount(account);
-        holding.setQuantity(assetEntry.getQuantity());
-        holding.setAverageUnitPrice(assetEntry.getUnitPrice());
-        return holding;
-    }
-
-    public void applyAssetSell(AssetAccount account, AssetAccountHolding holding, BigDecimal soldQuantity) {
-        if (soldQuantity == null || soldQuantity.signum() <= 0) {
-            throw new BusinessRuleViolationException("Sell amount must be positive");
-        }
-
-        BigDecimal holdingQuantity = holding.getQuantity();
-        if (holdingQuantity == null || holdingQuantity.compareTo(soldQuantity) < 0) {
-            throw new IllegalStateException("Insufficient asset quantity: " + holdingQuantity);
-        }
-
-        BigDecimal newQuantity = holdingQuantity.subtract(soldQuantity);
-
-        if (newQuantity.signum() == 0) {
-            // orphanRemoval = true olduğu için DB'den DELETE sorgusu atılacaktır.
-            account.removeHolding(holding);
-        } else {
-            // Dirty checking sayesinde DB'ye UPDATE sorgusu atılacaktır.
-            holding.setQuantity(newQuantity);
-        }
-
-    }
 
 }

@@ -14,6 +14,7 @@ public sealed interface TransactionCommand
         ExpenseCommand,
         IncomeCommand,
         InitialBalanceCommand,
+        OpeningAssetCommand,
         ReverseCommand,
         TransferCommand {
 }
